@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -12,7 +14,29 @@ from app.config import settings
 from app.routers import ROUTERS
 from app.store import store
 
-app = FastAPI(title="数据洞察与自助分析平台", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """启动时给种子对比方案补齐阈值版本 1，保证增量链路一开始就有版本可挂结果。
+
+    阈值解析复用统一判定标准；种子数据本身合法，解析失败只跳过不阻断启动。
+    """
+    from app.services.compare_standard import StandardError, parse_threshold
+
+    from app.runtime import compare_pipeline
+
+    for plan in store.rows("compare"):
+        if compare_pipeline.current_threshold_version(int(plan["id"])) is not None:
+            continue
+        try:
+            value, text = parse_threshold(plan.get("增长阈值"))
+        except StandardError:
+            continue
+        compare_pipeline.register_threshold(plan, value, text)
+    yield
+
+
+app = FastAPI(title="数据洞察与自助分析平台", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

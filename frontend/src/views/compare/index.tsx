@@ -45,6 +45,7 @@ export default function CompareView() {
   const [rows, setRows] = useState<Row[]>([])
   const [total, setTotal] = useState(0)
   const [errorMessage, setErrorMessage] = useState('')
+  const [infoMessage, setInfoMessage] = useState('')
   const [filters, setFilters] = useState<Record<string, string>>({})
   const filterFields = useMemo(() => columns.slice(0, 3), [])
 
@@ -70,17 +71,95 @@ export default function CompareView() {
 
   async function runAction(action: string, row: Row) {
     setErrorMessage('')
+    setInfoMessage('')
     try {
       const response = await request(`${ENDPOINT}/${row.id}/actions`, {
         method: 'POST',
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ values: { action } }),
       })
       if (!response.ok) {
         throw new Error('同环比分析动作未生效，请稍后重试')
       }
+      const payload = await response.json()
+      if (payload.ok === false) {
+        setErrorMessage(payload.message ?? '动作被业务规则拒绝')
+        return
+      }
+      setInfoMessage(payload.message ?? '动作已生效')
       await reload()
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '同环比分析操作失败')
+    }
+  }
+
+  // 增量批次：只处理新进入窗口的条目；重复批次号由后端台账幂等拦截
+  async function ingestBatch() {
+    const batchId = window.prompt('请输入增量批次号（重复批次不会重复累计）')
+    if (!batchId) {
+      return
+    }
+    const metric = window.prompt('请输入对比指标（如 COMP-0002 的「订单GMV」）')
+    if (!metric) {
+      return
+    }
+    const period = window.prompt('请输入周期（日 2026-09-15 / 月 2026-09 / 季 2026Q3 / 年 2026）')
+    if (!period) {
+      return
+    }
+    const amountText = window.prompt('请输入本批次增量数值')
+    const amount = Number(amountText)
+    if (amountText === null || Number.isNaN(amount)) {
+      setErrorMessage('增量数值必须是数字')
+      return
+    }
+    setErrorMessage('')
+    setInfoMessage('')
+    try {
+      const response = await request(`${ENDPOINT}/ingest`, {
+        method: 'POST',
+        body: JSON.stringify({
+          values: { batch_id: batchId, entries: [{ metric, period, amount }] },
+        }),
+      })
+      const payload = await response.json()
+      if (!response.ok) {
+        setErrorMessage(payload.detail ?? '增量批次处理失败')
+        return
+      }
+      const computed = payload.computed?.length ?? 0
+      setInfoMessage(
+        payload.duplicate
+          ? `批次 ${batchId} 为重复批次，未重复累计`
+          : `批次 ${batchId} 已入账，新增同环比结果 ${computed} 条`
+      )
+      await reload()
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '增量批次处理失败')
+    }
+  }
+
+  // 阈值变更：只生成新版本，历史结果按当时阈值保留，越界会被后端拒绝
+  async function changeThreshold(row: Row) {
+    const next = window.prompt(`修改「${row.方案编号}」的增长阈值（如 12% 或 0.12，范围 (0%,100%]）`, String(row.增长阈值 ?? ''))
+    if (next === null) {
+      return
+    }
+    setErrorMessage('')
+    setInfoMessage('')
+    try {
+      const response = await request(`${ENDPOINT}/${row.id}/threshold`, {
+        method: 'PUT',
+        body: JSON.stringify({ 增长阈值: next.trim() }),
+      })
+      const payload = await response.json()
+      if (!response.ok || payload.ok === false) {
+        setErrorMessage(payload.message ?? payload.detail ?? '增长阈值修改失败')
+        return
+      }
+      setInfoMessage(payload.message ?? '增长阈值已更新')
+      await reload()
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '增长阈值修改失败')
     }
   }
 
@@ -89,11 +168,11 @@ export default function CompareView() {
       <header className="page-head">
         <div>
           <h2>同环比分析管理</h2>
-          <p className="page-desc">维护同环比分析的周期配置、增长阈值与告警策略，为同环比分析提供可验证的数据工程流程。</p>
+          <p className="page-desc">按对比指标与基准周期维护增量水位与阈值版本，增量批次只处理新进入窗口，历史结论按当时阈值保留。</p>
         </div>
         <div className="page-actions">
-          <button className="btn primary" type="button" onClick={() => setErrorMessage('对比方案登记入口尚未接入审批流')}>
-            登记对比方案
+          <button className="btn primary" type="button" onClick={() => void ingestBatch()}>
+            推送增量批次
           </button>
           <button className="btn" type="button" onClick={() => window.open(`${ENDPOINT}/export`, '_blank')}>
             导出同环比分析清单
@@ -125,6 +204,8 @@ export default function CompareView() {
         <button className="btn ghost" type="button" onClick={() => setFilters({})}>重置条件</button>
       </form>
 
+      {infoMessage && <p className="info-text">{infoMessage}</p>}
+
       <table className="data-table">
         <thead>
           <tr>
@@ -142,6 +223,9 @@ export default function CompareView() {
                     {action}
                   </button>
                 ))}
+                <button className="link" type="button" onClick={() => void changeThreshold(row)}>
+                  调整增长阈值
+                </button>
               </td>
             </tr>
           ))}

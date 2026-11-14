@@ -30,6 +30,23 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/evaluation")
+def evaluate_alarms(metric: str | None = Query(default=None, description="按监控指标过滤")) -> dict[str, Any]:
+    """告警读取链路：按已冻结的同环比结果评估，不触发全量重算。
+
+    周期冲突时按更严格阈值口径重算的明细放在 conflicts；增量链路落盘的
+    历史告警事件（按阈值版本区分）放在 events。
+    """
+    return service.evaluate(metric=metric)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出分析告警规则清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "alarm", "total": total, "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条告警规则明细；不存在时给出可读的错误说明。"""
@@ -56,10 +73,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出分析告警规则清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "alarm", "total": total, "items": items}
